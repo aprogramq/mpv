@@ -1914,5 +1914,4 @@ summary({'cocoa': features['cocoa'] and features['swift'],
          'opengl': features['gl'],
          'vulkan': features['vulkan'],
          'wayland': features['wayland'],
-         'x11': features['x11']},
-         bool_yn: true)
+         'x11': features['x11']})
