@@ -15,13 +15,19 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <locale.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <inttypes.h>
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <libavutil/avutil.h>
+#include <unistd.h>
 
 #include "mpv_talloc.h"
 
@@ -56,6 +62,7 @@
 #include "stream/stream.h"
 #include "sub/dec_sub.h"
 #include "external_files.h"
+#include "ta/ta_talloc.h"
 #include "video/out/vo.h"
 
 #include "core.h"
@@ -653,28 +660,107 @@ static char *track_layout_hash(struct MPContext *mpctx)
 
 // Normally, video/audio/sub track selection is persistent across files. This
 // code resets track selection if the new file has a different track layout.
+static bool checked = false;
 static void check_previous_track_selection(struct MPContext *mpctx)
 {
+    checked = true;
     struct MPOpts *opts = mpctx->opts;
 
     if (!mpctx->track_layout_hash)
         return;
 
     char *h = track_layout_hash(mpctx);
+
+    char *curr_copy = talloc_strdup(NULL, h);
+    char *prev_copy = talloc_strdup(NULL, mpctx->track_layout_hash);
+
+
+    printf("\n\ncurrent:\n%s\n\nprev:\n%s\n\n", h, prev_copy);
+
+    int prev_audio_len = 0;
+    int current_audio_len = 0;
+
+    char *save_prev = NULL;
+    for(char *p = strtok_r(prev_copy, "\n", &save_prev);p;p = strtok_r(NULL, "\n", &save_prev)){
+            if (p[0] == '1') prev_audio_len++;
+    }
+    char *save_curr = NULL;
+    for(char *p = strtok_r(curr_copy, "\n", &save_curr);p;p = strtok_r(NULL, "\n", &save_curr)){
+            if (p[0] == '1') current_audio_len++;
+    }
+
+    printf("Current: %d, Prev: %d\n", current_audio_len, prev_audio_len);
+
     if (strcmp(h, mpctx->track_layout_hash) != 0) {
+        printf("\n\nCHANGES!!!!!\n\n");
         // Reset selection, but only if they're not "auto" or "off". The
         // defaults are -1 (default selection), or -2 (off) for secondary tracks.
         for (int t = 0; t < STREAM_TYPE_COUNT; t++) {
             for (int i = 0; i < num_ptracks[t]; i++) {
-                if (opts->stream_id[i][t] >= 0)
-                    mark_track_selection(mpctx, i, t, i == 0 ? -1 : -2);
+                if (opts->stream_id[i][t] >= 0){
+                    if (prev_audio_len < current_audio_len)
+                        mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t]+1 : -2);
+                    else if (prev_audio_len > current_audio_len)
+                        mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t]-1 : -2);
+                    else if (prev_audio_len == current_audio_len)
+                        mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t] : -2); }
             }
         }
         talloc_free(mpctx->track_layout_hash);
-        mpctx->track_layout_hash = NULL;
+        mpctx->track_layout_hash = h;
+        // mpctx->track_layout_hash = NULL;
     }
-    talloc_free(h);
+    // talloc_free(h);
 }
+static void check_the_same(struct MPContext *mpctx){
+    struct MPOpts *opts = mpctx->opts;
+
+    char *h = track_layout_hash(mpctx);
+
+    if (!h || !mpctx->track_layout_hash){
+    for (int t = 0; t < STREAM_TYPE_COUNT; t++) {
+        for (int i = 0; i < num_ptracks[t]; i++) {
+            if (opts->stream_id[i][t] >= 0){
+                    mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t] : -2);
+            }
+        }
+    }
+        return;
+    }
+    printf("\n\nЕсть что-то\n\n");
+
+    char *curr_copy = talloc_strdup(NULL, h);
+    char *prev_copy = talloc_strdup(NULL, mpctx->track_layout_hash);
+
+    int prev_audio_len = 0;
+    int current_audio_len = 0;
+
+    char *save_prev = NULL;
+    for(char *p = strtok_r(prev_copy, "\n", &save_prev);p;p = strtok_r(NULL, "\n", &save_prev)){
+            if (p[0] == '1') prev_audio_len++;
+    }
+    char *save_curr = NULL;
+    for(char *p = strtok_r(curr_copy, "\n", &save_curr);p;p = strtok_r(NULL, "\n", &save_curr)){
+            if (p[0] == '1') current_audio_len++;
+    }
+
+    for (int t = 0; t < STREAM_TYPE_COUNT; t++) {
+        for (int i = 0; i < num_ptracks[t]; i++) {
+            if (opts->stream_id[i][t] >= 0){
+                if (prev_audio_len < current_audio_len)
+                    mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t]+1 : -2);
+                else if (prev_audio_len > current_audio_len)
+                    mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t]-1 : -2);
+                else if (prev_audio_len == current_audio_len)
+                    mark_track_selection(mpctx, i, t, t == 1? opts->stream_id[i][t] : -2); }
+        }
+    }
+    // talloc_free(mpctx->track_layout_hash);
+    // mpctx->track_layout_hash = NULL;
+
+    // talloc_free(h);
+}
+
 
 // Update the matching track selection user option to the given value.
 void mark_track_selection(struct MPContext *mpctx, int order,
@@ -1807,6 +1893,10 @@ static void play_current_file(struct MPContext *mpctx)
     if (mpctx->stop_play)
         goto terminate_playback;
 
+    if ( checked ){
+        check_the_same(mpctx);
+    }
+    mpctx->track_layout_hash = talloc_steal(mpctx, track_layout_hash(mpctx));
     check_previous_track_selection(mpctx);
 
     process_hooks(mpctx, "on_preloaded");
